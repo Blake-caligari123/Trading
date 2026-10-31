@@ -1,0 +1,14 @@
+{
+  "name": "Trading Bot Terminal",
+  "short_name": "Bot",
+  "description": "Terminal for the self-improving AI trading bot",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0d0b",
+  "theme_color": "#0f1411",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -144,7 +144,10 @@ class Evolver:
                 p.unlink(missing_ok=True)
 
     # ---------- the loop ----------
-    async def evolve(self, bars: dict, live_summary: dict, recent_trades: list[dict]) -> dict:
+    async def evolve(self, bars: dict, live_summary: dict, recent_trades: list[dict],
+                     submitted: list[tuple[str, str, str]] | None = None) -> dict:
+        """Run one improvement cycle. `submitted` = [(author, rationale, source)] from an external AI
+        (e.g. via the MCP server); those replace the internally generated candidates but face the same gate."""
         if self.lock.locked():
             return {"status": "busy"}
         async with self.lock:
@@ -158,7 +161,7 @@ class Evolver:
             self.bus.emit("evolve", f"incumbent  holdout score={inc_score:+.3f} sharpe={inc['holdout'].get('sharpe')} "
                                     f"mdd={inc['holdout'].get('max_drawdown')}")
 
-            candidates = await self._propose(incumbent_src, inc, live_summary, recent_trades)
+            candidates = submitted or await self._propose(incumbent_src, inc, live_summary, recent_trades)
             best = None
             for i, (author, rationale, src) in enumerate(candidates):
                 try:
@@ -177,7 +180,7 @@ class Evolver:
                                         f"mdd={h['max_drawdown']} trades={h['trades']}")
                 if best is None or h["score"] > best[3]["holdout"]["score"]:
                     best = (author, rationale, src, m)
-                elif author == "grok":
+                elif author != "mutation":
                     self._record(src, author, rationale, m, False, reason="beaten by another candidate")
 
             if best is None:
@@ -205,7 +208,7 @@ class Evolver:
             try:
                 out.append(await self._grok_candidate(src, inc, live, trades))
             except Exception as e:
-                self.bus.emit("error", f"Grok proposal failed: {type(e).__name__}: {e}")
+                self.bus.emit("error", f"AI proposal failed: {type(e).__name__}: {e}")
         # always add cheap parameter mutations as a baseline / fallback
         for _ in range(3 if out else 6):
             try:
@@ -231,13 +234,13 @@ class Evolver:
             f"## Journal of previous attempts (learn from the rejected ones)\n{json.dumps(history, indent=1, default=str)}\n\n"
             "Propose ONE improved strategy file."
         )
-        self.bus.emit("ai", "asking Grok for a strategy rewrite…")
+        self.bus.emit("ai", f"asking {self.cfg.llm_model} for a strategy rewrite…")
         reply = await self.brain.chat(SYSTEM_PROMPT, prompt, temperature=0.7)
         code = extract_code(reply)
         m = re.search(r"RATIONALE:\s*(.+?)(?:```|$)", reply, re.S)
         rationale = (m.group(1) if m else reply[:600]).strip()
-        self.bus.emit("ai", f"Grok: {rationale[:400]}")
-        return ("grok", rationale, code)
+        self.bus.emit("ai", f"AI: {rationale[:400]}")
+        return ("ai", rationale, code)
 
 
 def extract_code(reply: str) -> str:

@@ -1,0 +1,14 @@
+{
+  "name": "trading-bot",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "pip install -r requirements.txt && [ -f .env ] || cp .env.example .env",
+  "forwardPorts": [8000],
+  "portsAttributes": { "8000": { "label": "Bot terminal", "onAutoForward": "openBrowser" } },
+  "containerEnv": { "HOST": "0.0.0.0" },
+  "secrets": {
+    "DASHBOARD_TOKEN": { "description": "Access token for the terminal and the /mcp endpoint" },
+    "LLM_API_KEY": { "description": "Optional: API key for the bot's built-in AI (xAI, OpenAI, OpenRouter…)" },
+    "ALPACA_API_KEY": { "description": "Optional: Alpaca key" },
+    "ALPACA_API_SECRET": { "description": "Optional: Alpaca secret" }
+  }
+}

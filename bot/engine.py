@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timezone
 
@@ -59,6 +60,7 @@ class Engine:
         self.equity_curve: list[tuple[float, float]] = []
         self.trades: list[dict] = []
         self._day = None
+        self._last_risk_notes: list[str] = []
         self._tasks: set[asyncio.Task] = set()
         self._register_brain_tools()
 
@@ -72,7 +74,7 @@ class Engine:
     async def run(self) -> None:
         mode = "LIVE MONEY" if self.cfg.is_live_money else self.broker.name
         self.bus.emit("info", f"engine starting | broker={mode} | symbols={','.join(self.cfg.symbols)} | "
-                              f"AI={'grok:' + self.cfg.grok_model if self.brain.available else 'offline (mutation-only)'}")
+                              f"AI={self.cfg.llm_model if self.brain.available else 'offline (mutation-only)'}")
         if self.cfg.is_live_money:
             self.bus.emit("risk", "*** LIVE TRADING WITH REAL MONEY ENABLED ***")
         self.load_active_strategy()
@@ -124,8 +126,11 @@ class Engine:
                 self._auto_rollback()
             return
         weights, notes = self.risk.sanitize_weights(raw)
-        for n in notes:
-            self.bus.emit("risk", n)
+        kinds = [re.sub(r"[-+]?\d[\d.]*", "#", n) for n in notes]  # same warning, different number = same
+        if kinds != self._last_risk_notes:  # log risk adjustments when they change, not every tick
+            for n in notes:
+                self.bus.emit("risk", n)
+            self._last_risk_notes = kinds
         self._rebalance(weights, positions, equity)
 
     def _rebalance(self, weights: dict[str, float], positions, equity: float) -> None:
@@ -210,7 +215,22 @@ class Engine:
             self.bus.emit("error", f"evolution failed: {type(e).__name__}: {e}")
             return {"status": "error"}
 
-    # ---------- tools Grok can call ----------
+    async def submit_strategy(self, source: str, rationale: str, author: str) -> dict:
+        """External AI (e.g. via MCP) proposes a full strategy file; same sandbox + holdout gate as internal ones."""
+        self.bus.emit("ai", f"strategy submitted by {author}: {rationale[:200]}")
+        bars = await asyncio.to_thread(self.backtest_bars)
+        res = await self.evolver.evolve(bars, self.live_summary(), self.trades[-50:],
+                                        submitted=[(author[:40], rationale, source)])
+        if res.get("status") == "promoted":
+            self.load_active_strategy()
+        return res
+
+    async def backtest_source(self, source: str) -> dict:
+        """Walk-forward backtest of arbitrary strategy source without promoting it."""
+        bars = await asyncio.to_thread(self.backtest_bars)
+        return await self.evolver.evaluate(source, bars, f"adhoc{int(time.time() * 1000)}")
+
+    # ---------- tools the built-in AI can call ----------
     def _register_brain_tools(self) -> None:
         async def status(_):
             return self.live_summary()
@@ -244,7 +264,7 @@ class Engine:
         return {"type": "status", "state": state, "broker": "LIVE" if self.cfg.is_live_money else self.broker.name,
                 "equity": s["equity"], "pnl_today": s["pnl_today"], "pnl_total": s["pnl_since_start"],
                 "version": s["strategy_version"], "ticks": self.ticks, "positions": len(s["positions"]),
-                "evolving": self.evolver.lock.locked(), "ai": self.cfg.grok_model if self.brain.available else "offline",
+                "evolving": self.evolver.lock.locked(), "ai": self.cfg.llm_model if self.brain.available else "offline",
                 "spark": [round(e, 2) for _, e in self.equity_curve[-120:]]}
 
     async def command(self, line: str) -> str:
@@ -277,7 +297,7 @@ class Engine:
             for e in self.evolver.journal[-25:]:
                 h = (e.get("metrics") or {}).get("holdout") or {}
                 mark = "*" if e.get("is_active") else ("+" if e.get("promoted") else "x")
-                rows.append(f"{mark} v{e['version']:<4} {e['author']:9} score={h.get('score', '—')!s:>7} "
+                rows.append(f"{mark} v{e['version']:<4} {e['author'][:12]:12} score={h.get('score', '—')!s:>7} "
                             f"sharpe={h.get('sharpe', '—')!s:>6}  {e.get('reason') or e.get('rationale', '')[:70]}")
             return "* active   + promoted   x rejected\n" + "\n".join(rows)
         if cmd == "evolve":
@@ -294,7 +314,7 @@ class Engine:
                 return f"rollback failed: {e}"
         if cmd == "ask":
             if not self.brain.available:
-                return "Grok is offline: set XAI_API_KEY in .env"
+                return "AI is offline: set LLM_API_KEY in .env (any OpenAI-compatible provider)"
             if not arg:
                 return "usage: ask <question>"
             self.bus.emit("ai", f"> {arg}")

@@ -106,12 +106,12 @@ class Brain:
         self.cfg, self.bus = cfg, bus
         self.mcp = MCPBridge(cfg, bus)
         self.local_tools: dict[str, LocalTool] = {}
-        self.http = httpx.AsyncClient(base_url=cfg.xai_base_url, timeout=180,
-                                      headers={"Authorization": f"Bearer {cfg.xai_api_key}"})
+        self.http = httpx.AsyncClient(base_url=cfg.llm_base_url, timeout=180,
+                                      headers={"Authorization": f"Bearer {cfg.llm_api_key}"})
 
     @property
     def available(self) -> bool:
-        return bool(self.cfg.xai_api_key)
+        return bool(self.cfg.llm_api_key)
 
     def register_tool(self, name: str, description: str, fn: Callable[[dict], Awaitable[Any]],
                       parameters: dict | None = None) -> None:
@@ -122,12 +122,12 @@ class Brain:
     async def chat(self, system: str, user: str, use_tools: bool = True, max_rounds: int = 6,
                    temperature: float = 0.4) -> str:
         if not self.available:
-            raise RuntimeError("XAI_API_KEY not set")
+            raise RuntimeError("no AI configured: set LLM_API_KEY (or XAI_API_KEY)")
         await self.mcp.connect()
         tools = ([t[0] for t in self.local_tools.values()] + self.mcp.tools) if use_tools else []
         messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         for _ in range(max_rounds):
-            body: dict = {"model": self.cfg.grok_model, "messages": messages, "temperature": temperature}
+            body: dict = {"model": self.cfg.llm_model, "messages": messages, "temperature": temperature}
             if tools:
                 body["tools"] = tools
             r = await self.http.post("/chat/completions", json=body)
@@ -157,6 +157,6 @@ class Brain:
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": result[:20_000]})
         # out of rounds: force a final answer without tools
         messages.append({"role": "user", "content": "Tool budget exhausted. Give your final answer now."})
-        r = await self.http.post("/chat/completions", json={"model": self.cfg.grok_model, "messages": messages})
+        r = await self.http.post("/chat/completions", json={"model": self.cfg.llm_model, "messages": messages})
         r.raise_for_status()
         return r.json()["choices"][0]["message"].get("content") or ""

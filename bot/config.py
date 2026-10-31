@@ -54,9 +54,9 @@ class Config:
     symbols: list[str] = field(default_factory=lambda: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"])
     bar_timeframe: str = "5Min"
     tick_seconds: float = 60.0
-    xai_api_key: str = ""
-    grok_model: str = "grok-4"
-    xai_base_url: str = "https://api.x.ai/v1"
+    llm_api_key: str = ""
+    llm_model: str = "grok-4"
+    llm_base_url: str = "https://api.x.ai/v1"
     mcp_server_url: str = ""
     mcp_server_token: str = ""
     mcp_server_command: str = ""
@@ -67,6 +67,7 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8000
     dashboard_token: str = ""
+    mcp_server_enabled: bool = True
 
     @property
     def is_live_money(self) -> bool:
@@ -83,9 +84,10 @@ class Config:
             symbols=[s.strip().upper() for s in os.getenv("SYMBOLS", "SPY,QQQ,AAPL,MSFT,NVDA").split(",") if s.strip()],
             bar_timeframe=os.getenv("BAR_TIMEFRAME", "5Min"),
             tick_seconds=_f("TICK_SECONDS", 60.0),
-            xai_api_key=os.getenv("XAI_API_KEY", ""),
-            grok_model=os.getenv("GROK_MODEL", "grok-4"),
-            xai_base_url=os.getenv("XAI_BASE_URL", "https://api.x.ai/v1").rstrip("/"),
+            # Any OpenAI-compatible chat API. LLM_* wins; XAI_*/GROK_MODEL kept for backwards compatibility.
+            llm_api_key=os.getenv("LLM_API_KEY") or os.getenv("XAI_API_KEY", ""),
+            llm_model=os.getenv("LLM_MODEL") or os.getenv("GROK_MODEL", "grok-4"),
+            llm_base_url=(os.getenv("LLM_BASE_URL") or os.getenv("XAI_BASE_URL", "https://api.x.ai/v1")).rstrip("/"),
             mcp_server_url=os.getenv("MCP_SERVER_URL", ""),
             mcp_server_token=os.getenv("MCP_SERVER_TOKEN", ""),
             mcp_server_command=os.getenv("MCP_SERVER_COMMAND", ""),
@@ -102,6 +104,7 @@ class Config:
             host=os.getenv("HOST", "127.0.0.1"),
             port=_i("PORT", 8000),
             dashboard_token=os.getenv("DASHBOARD_TOKEN", ""),
+            mcp_server_enabled=_b("MCP_SERVER_ENABLED", True),
         )
         cfg.validate()
         return cfg
@@ -116,7 +119,7 @@ class Config:
                 f"ALPACA_LIVE=true trades real money. Set LIVE_TRADING_CONFIRM={LIVE_CONFIRM_PHRASE} to proceed."
             )
         if self.host not in {"127.0.0.1", "localhost", "::1"} and not self.dashboard_token:
-            raise ValueError("Dashboard exposed beyond localhost: set DASHBOARD_TOKEN")
+            raise ValueError("Bot exposed beyond localhost: set DASHBOARD_TOKEN (protects the terminal and the /mcp endpoint)")
         r = self.risk
         if not (0 < r.max_position_pct <= 1 and 0 < r.max_gross_exposure <= 2 and 0 < r.max_daily_loss_pct < 1):
             raise ValueError("Risk limits out of sane range")

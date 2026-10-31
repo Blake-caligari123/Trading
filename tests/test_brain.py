@@ -26,7 +26,7 @@ def test_grok_tool_loop():
             msg = {"role": "assistant", "content": "equity is 123"}
         return httpx.Response(200, json={"choices": [{"message": msg}]})
 
-    brain = Brain(Config(xai_api_key="k"), EventBus())
+    brain = Brain(Config(llm_api_key="k"), EventBus())
     brain.http = httpx.AsyncClient(base_url="https://x", transport=httpx.MockTransport(handler),
                                    headers={"Authorization": "Bearer k"})
 

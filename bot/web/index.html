@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Terminal</title>
+<style>
+  :root {
+    --bg: #0a0d0b; --panel: #0f1411; --line: #1c2620; --fg: #c8d6cc; --dim: #5f7366;
+    --green: #4ade80; --red: #f87171; --amber: #fbbf24; --cyan: #67e8f9; --violet: #c4b5fd; --blue: #93c5fd;
+    --font: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.5 var(--font); }
+  body { display: flex; flex-direction: column; }
+  #bar { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: center; padding: 8px 16px;
+         background: var(--panel); border-bottom: 1px solid var(--line); white-space: nowrap; }
+  #bar .k { color: var(--dim); }
+  #bar .v { font-variant-numeric: tabular-nums; }
+  .pill { padding: 0 8px; border-radius: 3px; font-weight: 700; letter-spacing: .05em; }
+  .RUNNING { background: #14532d; color: var(--green); }
+  .PAUSED  { background: #422006; color: var(--amber); }
+  .HALTED  { background: #450a0a; color: var(--red); }
+  .LIVE    { background: var(--red); color: #000; }
+  #spark { color: var(--cyan); letter-spacing: -1px; flex: 1 1 160px; overflow: hidden; text-align: right; }
+  #log { flex: 1; overflow-y: auto; padding: 10px 16px; white-space: pre-wrap; word-break: break-word; }
+  .ln { display: flex; gap: 10px; }
+  .ts { color: var(--dim); flex: none; }
+  .lv { flex: none; width: 6ch; }
+  .info .lv { color: var(--blue); }   .trade .lv, .trade .m { color: var(--green); }
+  .ai .lv, .ai .m { color: var(--violet); }  .evolve .lv, .evolve .m { color: var(--cyan); }
+  .warn .lv, .warn .m { color: var(--amber); }  .error .lv, .error .m, .risk .lv, .risk .m { color: var(--red); }
+  .sell .m { color: #fca5a5; }
+  .cmd { color: var(--fg); margin-top: 6px; } .cmd b { color: var(--green); }
+  .reply { color: var(--fg); padding-left: 2ch; border-left: 2px solid var(--line); margin: 2px 0 8px; }
+  #prompt { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  #prompt span { color: var(--green); }
+  #in { flex: 1; background: transparent; border: 0; outline: 0; color: var(--fg); font: inherit; caret-color: var(--green); }
+  #conn { color: var(--dim); }
+  @media (max-width: 640px) { .ts { display: none; } #spark { display: none; } }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="pill" id="state">CONNECTING</span>
+  <span><span class="k">broker</span> <span class="v" id="broker">—</span></span>
+  <span><span class="k">equity</span> <span class="v" id="equity">—</span></span>
+  <span><span class="k">day</span> <span class="v" id="pnlday">—</span></span>
+  <span><span class="k">total</span> <span class="v" id="pnltot">—</span></span>
+  <span><span class="k">strategy</span> <span class="v" id="ver">—</span></span>
+  <span><span class="k">pos</span> <span class="v" id="pos">—</span></span>
+  <span><span class="k">ai</span> <span class="v" id="ai">—</span></span>
+  <span id="spark"></span>
+</div>
+<div id="log"></div>
+<div id="prompt"><span>bot&gt;</span><input id="in" autocomplete="off" spellcheck="false" autofocus placeholder="type 'help'"><span id="conn">○</span></div>
+<script>
+const $ = id => document.getElementById(id);
+const log = $("log"), input = $("in");
+const CMDS = ["help","status","positions","trades","strategy","params","versions","evolve","rollback","ask","mcp","pause","resume","flatten","reset-halt","clear"];
+const hist = JSON.parse((() => { try { return localStorage.getItem("hist") } catch { return null } })() || "[]");
+let hi = hist.length, ws, retry = 500;
+
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const fmt = n => n == null ? "—" : Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const sgn = n => n == null ? "—" : (n >= 0 ? "+" : "") + fmt(n);
+const atBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+
+function add(html, cls) {
+  const stick = atBottom();
+  const d = document.createElement("div");
+  d.className = cls; d.innerHTML = html; log.appendChild(d);
+  while (log.childElementCount > 4000) log.firstChild.remove();
+  if (stick) log.scrollTop = log.scrollHeight;
+}
+function event(ev) {
+  const t = new Date(ev.ts * 1000).toLocaleTimeString([], {hour12: false});
+  const side = ev.data?.fill?.side === "sell" ? " sell" : "";
+  add(`<span class="ts">${t}</span><span class="lv">${ev.level.toUpperCase()}</span><span class="m">${esc(ev.msg)}</span>`, `ln ${ev.level}${side}`);
+}
+function color(el, n) { el.style.color = n == null ? "" : n >= 0 ? "var(--green)" : "var(--red)"; }
+function status(s) {
+  $("state").textContent = s.state + (s.evolving ? " · EVOLVING" : ""); $("state").className = "pill " + s.state;
+  $("broker").innerHTML = s.broker === "LIVE" ? '<span class="pill LIVE">LIVE $</span>' : esc(s.broker);
+  $("equity").textContent = fmt(s.equity);
+  $("pnlday").textContent = sgn(s.pnl_today); color($("pnlday"), s.pnl_today);
+  $("pnltot").textContent = sgn(s.pnl_total); color($("pnltot"), s.pnl_total);
+  $("ver").textContent = "v" + s.version; $("pos").textContent = s.positions; $("ai").textContent = s.ai;
+  const sp = s.spark || [];
+  if (sp.length > 1) {
+    const lo = Math.min(...sp), hi = Math.max(...sp), bl = "▁▂▃▄▅▆▇█";
+    $("spark").textContent = sp.slice(-80).map(v => bl[hi === lo ? 3 : Math.round((v - lo) / (hi - lo) * 7)]).join("");
+  }
+}
+function connect() {
+  const tok = new URLSearchParams(location.search).get("token");
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${tok ? "?token=" + encodeURIComponent(tok) : ""}`);
+  ws.onopen = () => { $("conn").textContent = "●"; $("conn").style.color = "var(--green)"; retry = 500; };
+  ws.onclose = e => {
+    $("conn").textContent = "○"; $("conn").style.color = "var(--red)";
+    if (e.code === 4401) { add("unauthorized: append ?token=… to the URL", "ln error"); return; }
+    setTimeout(connect, retry = Math.min(retry * 2, 10000));
+  };
+  ws.onmessage = m => {
+    const d = JSON.parse(m.data);
+    if (d.type === "history") { log.innerHTML = ""; d.events.forEach(event); add("type 'help' for commands", "ln info"); }
+    else if (d.type === "event") event(d);
+    else if (d.type === "status") status(d);
+    else if (d.type === "reply") add(esc(d.text), "reply");
+  };
+}
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    const v = input.value.trim(); input.value = "";
+    if (!v) return;
+    hist.push(v); if (hist.length > 200) hist.shift(); hi = hist.length;
+    try { localStorage.setItem("hist", JSON.stringify(hist)); } catch {}
+    add(`<b>bot&gt;</b> ${esc(v)}`, "cmd");
+    if (v === "clear") { log.innerHTML = ""; return; }
+    if (["flatten", "reset-halt"].includes(v) && !confirm(`Really run '${v}'?`)) return;
+    if (ws?.readyState === 1) ws.send(JSON.stringify({cmd: v})); else add("not connected", "ln error");
+    log.scrollTop = log.scrollHeight;
+  } else if (e.key === "ArrowUp") { if (hi > 0) input.value = hist[--hi]; e.preventDefault(); }
+  else if (e.key === "ArrowDown") { input.value = hi < hist.length - 1 ? hist[++hi] : (hi = hist.length, ""); e.preventDefault(); }
+  else if (e.key === "Tab") {
+    e.preventDefault();
+    const m = CMDS.filter(c => c.startsWith(input.value)); if (m.length === 1) input.value = m[0] + " ";
+    else if (m.length) add(m.join("  "), "reply");
+  }
+});
+document.addEventListener("click", () => { if (!getSelection().toString()) input.focus(); });
+connect();
+</script>
+</body>
+</html>

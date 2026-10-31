@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29   # [standard] pulls in the websockets backend
+httpx>=0.27
+mcp>=1.0        # optional: only needed when MCP_SERVER_URL / MCP_SERVER_COMMAND is set
+pytest>=8

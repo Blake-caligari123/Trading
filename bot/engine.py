@@ -5,14 +5,17 @@ import asyncio
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 
 from .backtest import LOOKBACK, REBALANCE_BAND
 from .brain import Brain
+from .analysis import indicators
 from .brokers import AlpacaBroker, Broker, PaperBroker
 from .config import DATA_DIR, Config
 from .data import AlpacaFeed, SyntheticFeed
+from .desk import Desk
 from .events import EventBus
 from .evolve import ACTIVE, VERSIONS, Evolver
 from .risk import RiskManager
@@ -33,12 +36,37 @@ HELP = """commands:
   versions               strategy version journal (promoted + rejected attempts)
   evolve                 run a self-improvement cycle now
   rollback <v>           revert to strategy version v
-  ask <question>         ask Grok (with live tools + MCP tools)
-  mcp                    list MCP tools available to Grok
-  pause | resume         stop / restart placing orders (data + evolution keep running)
+  ask <question>         ask the built-in AI (with live tools + MCP tools)
+  mcp                    list MCP tools available to the built-in AI
+  overview               all symbols: price, trend, RSI, position, strategy signal
+  analyze <sym> [tf]     indicators for one symbol (tf: 5Min 15Min 30Min 1Hour 4Hour 1Day)
+  buy <sym> <size> [sl=] [tp=]   size: 10 (shares) | $5000 | 5%  (of equity)
+  sell <sym> <size> [sl=] [tp=]  sells a long / opens a short if ALLOW_SHORT
+  close <sym> [pct]      close a position (default 100%)
+  release <sym>          hand a desk-traded symbol back to the strategy
+  mode auto|manual       auto: strategy trades; manual: only desk orders
+  journal [n]            desk orders with reasons and realized P&L
+  pause | resume         stop / restart opening trades (stops + exits keep working)
   flatten                close all positions and pause
   reset-halt             clear the daily-loss kill switch (use with care)
   clear                  clear the screen"""
+
+
+def fmt_desk(r: dict) -> str:
+    """One-line, phone-friendly summary of a desk order result."""
+    st = r.get("status")
+    if st == "rejected":
+        hint = f"  (max allowed: {r['max_allowed_qty']} ≈ {r.get('max_allowed_notional', 0):,.2f})" if r.get("max_allowed_qty") is not None else ""
+        return f"REJECTED: {r['reason']}{hint}"
+    if st in ("filled", "preview"):
+        line = (f"{'FILLED' if st == 'filled' else 'PREVIEW'} {r['side'].upper()} {r['qty']} {r['symbol']} @ "
+                f"{r.get('fill_price', r['est_price'])}  ≈ {r['est_notional']:,.2f}\n"
+                f"position {r['position_before']} → {r['position_after']} ({r['weight_after']:+.1%} of equity), "
+                f"gross {r['gross_exposure_after']:.0%}  SL {r['stop_loss'] or '—'}  TP {r['take_profit'] or '—'}")
+        if r.get("realized_pnl"):
+            line += f"\nrealized P&L {r['realized_pnl']:+,.2f}"
+        return line
+    return r.get("reason") or json.dumps(r)
 
 
 class Engine:
@@ -56,6 +84,9 @@ class Engine:
         self.evolver = Evolver(cfg, self.bus, self.brain)
         self.strategy: dict = {}
         self.paused = False
+        self.paused_by: str | None = None
+        self.lock = threading.RLock()   # serializes ticks and desk orders
+        self.desk = Desk(self)
         self.ticks = 0
         self.strategy_errors = 0
         self.equity_curve: list[tuple[float, float]] = []
@@ -76,7 +107,8 @@ class Engine:
                 "day_start_equity": self.risk.state.day_start_equity if self.risk.state else None,
                 "halted": bool(self.risk.state and self.risk.state.halted),
                 "halt_reason": self.risk.state.halt_reason if self.risk.state else "",
-                "equity_curve": self.equity_curve[-2000:], "trades": self.trades[-500:]}
+                "equity_curve": self.equity_curve[-2000:], "trades": self.trades[-500:],
+                "paused_by": self.paused_by, "desk": self.desk.snapshot()}
         if isinstance(self.broker, PaperBroker):
             snap["paper"] = self.broker.snapshot()
         if isinstance(self.feed, SyntheticFeed):
@@ -85,6 +117,13 @@ class Engine:
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(snap, default=str))
         os.replace(tmp, self.state_path)
+
+    def persist(self) -> None:
+        if self.cfg.persist_state:
+            try:
+                self.save_state()
+            except Exception as e:
+                self.bus.emit("warn", f"state save failed: {e}")
 
     def load_state(self) -> None:
         if not self.state_path.exists():
@@ -104,6 +143,9 @@ class Engine:
         self.ticks, self.paused, self._day = snap["ticks"], snap["paused"], snap["day"]
         self.equity_curve = [tuple(x) for x in snap["equity_curve"]]
         self.trades = snap["trades"]
+        self.paused_by = snap.get("paused_by")
+        if "desk" in snap:
+            self.desk.restore(snap["desk"])
         if snap.get("day_start_equity"):
             self.risk.start_day(snap["day_start_equity"])
             self.risk.state.halted, self.risk.state.halt_reason = snap["halted"], snap["halt_reason"]
@@ -149,6 +191,10 @@ class Engine:
 
     # ---------- one trading step ----------
     def tick(self) -> None:
+        with self.lock:
+            self._tick()
+
+    def _tick(self) -> None:
         self.feed.advance()
         self.ticks += 1
         equity = self.broker.equity()
@@ -162,7 +208,10 @@ class Engine:
                 for f in self.broker.close_all():
                     self._log_fill(f)
             return
-        if self.paused or not self.broker.market_open():
+        if not self.broker.market_open():
+            return
+        self.desk.check_exits()            # stop-loss / take-profit run even while paused
+        if self.paused or self.desk.mode == "manual":
             return
 
         history = self.feed.history(LOOKBACK)
@@ -183,12 +232,21 @@ class Engine:
             for n in notes:
                 self.bus.emit("risk", n)
             self._last_risk_notes = kinds
-        self._rebalance(weights, positions, equity)
+        locked = self.desk.locked()
+        if locked:  # desk-controlled symbols keep their size; strategy gets whatever gross exposure is left
+            locked_gross = sum(abs(cur_w.get(s, 0.0)) for s in locked)
+            free = {s: w for s, w in weights.items() if s not in locked}
+            room = max(0.0, self.cfg.risk.max_gross_exposure - locked_gross)
+            g = sum(abs(w) for w in free.values())
+            weights = {s: w * room / g for s, w in free.items()} if g > room > 0 or (g and room == 0) else free
+        self._rebalance(weights, positions, equity, skip=locked)
 
-    def _rebalance(self, weights: dict[str, float], positions, equity: float) -> None:
+    def _rebalance(self, weights: dict[str, float], positions, equity: float, skip: set[str] = frozenset()) -> None:
         min_notional = max(1.0, REBALANCE_BAND * equity)
         orders = []
         for sym in self.cfg.symbols:
+            if sym in skip:
+                continue
             px = self.feed.last_price(sym)
             cur = positions[sym].qty if sym in positions else 0.0
             target = weights.get(sym, 0.0) * equity / px
@@ -206,13 +264,15 @@ class Engine:
             except Exception as e:
                 self.bus.emit("error", f"order {side} {qty} {sym} failed: {e}")
 
-    def _log_fill(self, f: dict, ref_px: float | None = None) -> None:
+    def _log_fill(self, f: dict, ref_px: float | None = None, quiet: bool = False) -> None:
         f = dict(f)
         f.setdefault("price", ref_px)
         f["tick"] = self.ticks
         self.trades.append(f)
         self.trades = self.trades[-1000:]
         px = f.get("price")
+        if quiet:
+            return
         self.bus.emit("trade", f"{f.get('side', '?').upper():4} {f.get('qty')} {f.get('symbol')}"
                                + (f" @ {px:.2f}" if isinstance(px, (int, float)) else "")
                                + f"  [{f.get('status', '')}]", fill=f)
@@ -314,10 +374,96 @@ class Engine:
         s = self.live_summary()
         state = "HALTED" if s["halted"] else "PAUSED" if self.paused else "RUNNING"
         return {"type": "status", "state": state, "broker": "LIVE" if self.cfg.is_live_money else self.broker.name,
+                "mode": self.desk.mode, "desk": sorted(self.desk.manual),
                 "equity": s["equity"], "pnl_today": s["pnl_today"], "pnl_total": s["pnl_since_start"],
                 "version": s["strategy_version"], "ticks": self.ticks, "positions": len(s["positions"]),
                 "evolving": self.evolver.lock.locked(), "ai": self.cfg.llm_model if self.brain.available else "offline",
                 "spark": [round(e, 2) for _, e in self.equity_curve[-120:]]}
+
+    def _cmd_order(self, side: str, arg: str) -> str:
+        a = arg.split()
+        if len(a) < 2:
+            return f"usage: {side} <sym> <qty | $notional | pct%> [sl=price] [tp=price]"
+        sym, size = a[0], a[1]
+        kw: dict = {}
+        try:
+            if size.startswith("$"):
+                kw["notional"] = float(size[1:].replace(",", ""))
+            elif size.endswith("%"):
+                kw["percent_equity"] = float(size[:-1])
+            else:
+                kw["qty"] = float(size)
+            for t in a[2:]:
+                k, _, v = t.partition("=")
+                if k in ("sl", "stop"):
+                    kw["stop_loss"] = float(v)
+                elif k in ("tp", "target"):
+                    kw["take_profit"] = float(v)
+        except ValueError:
+            return "could not parse size / sl / tp"
+        return fmt_desk(self.desk.order(sym, side, reason="operator terminal order", author="operator", **kw))
+
+    # ---------- pause / resume (an AI can't override an operator's pause) ----------
+    def pause(self, by: str) -> str:
+        self.paused = True
+        if self.paused_by != "operator":
+            self.paused_by = by
+        self.bus.emit("warn", f"trading paused by {by}")
+        return f"paused (by {self.paused_by})"
+
+    def resume(self, by: str) -> str:
+        if self.paused and self.paused_by == "operator" and by != "operator":
+            return "refused: trading was paused by the operator; only the operator can resume it"
+        self.paused, self.paused_by = False, None
+        self.bus.emit("info", f"trading resumed by {by}")
+        return "resumed"
+
+    # ---------- research helpers (used by MCP tools and terminal) ----------
+    def clock(self) -> dict:
+        c = getattr(self.broker, "clock", None) or getattr(self.feed, "clock", None)
+        try:
+            return c() if c else {"is_open": self.broker.market_open()}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def strategy_signals(self) -> dict:
+        """What the active strategy wants right now (target weights after risk clamps)."""
+        with self.lock:
+            equity = self.broker.equity()
+            positions = self.broker.positions()
+            cur_w = {s: p.market_value / equity for s, p in positions.items()} if equity > 0 else {}
+            try:
+                raw = self.strategy["generate_signals"](self.feed.history(LOOKBACK), cur_w, dict(self.strategy["PARAMS"]))
+            except Exception as e:
+                return {"error": f"strategy error: {e}"}
+        w, notes = self.risk.sanitize_weights(raw)
+        return {"strategy_version": self.evolver.current_version,
+                "target_weights": {s: round(w.get(s, 0.0), 4) for s in self.cfg.symbols},
+                "current_weights": {s: round(cur_w.get(s, 0.0), 4) for s in self.cfg.symbols},
+                "risk_notes": notes, "desk_symbols_ignored_by_strategy": sorted(self.desk.locked())}
+
+    def analyze(self, symbol: str, timeframe: str = "5Min", n: int = 200) -> dict:
+        sym = symbol.upper()
+        if sym not in self.cfg.symbols:
+            return {"error": f"{sym} not in universe {self.cfg.symbols}"}
+        bars = self.feed.get_bars(sym, timeframe, n)
+        return {"symbol": sym, "timeframe": timeframe, **indicators(bars)}
+
+    def market_overview(self) -> dict:
+        sig = self.strategy_signals()
+        equity = self.broker.equity()
+        positions = self.broker.positions()
+        locked = self.desk.locked()
+        rows = []
+        for s in self.cfg.symbols:
+            ind = indicators(self.feed.get_bars(s, "5Min", 200))
+            q = self.feed.quote(s)
+            rows.append({"symbol": s, "last": q.get("last") or ind.get("last"), "day_change": q.get("day_change"),
+                         "trend": ind.get("trend"), "rsi_14": ind.get("rsi_14"), "atr_pct": ind.get("atr_pct"),
+                         "position_weight": round(positions[s].market_value / equity, 4) if s in positions and equity else 0.0,
+                         "strategy_target_weight": (sig.get("target_weights") or {}).get(s, 0.0),
+                         "managed_by": "desk" if s in locked else "strategy"})
+        return {"timeframe": "5Min", "clock": self.clock(), "mode": self.desk.mode, "symbols": rows}
 
     async def command(self, line: str) -> str:
         out = await self._command(line)
@@ -387,15 +533,41 @@ class Engine:
             return "\n".join(f"{t['function']['name'][5:]}: {t['function']['description'][:90]}"
                              for t in self.brain.mcp.tools) or "MCP connected but exposes no tools"
         if cmd == "pause":
-            self.paused = True
-            self.bus.emit("warn", "trading paused by operator")
-            return "paused"
+            return self.pause("operator")
         if cmd == "resume":
-            self.paused = False
-            self.bus.emit("info", "trading resumed by operator")
-            return "resumed"
+            return self.resume("operator")
+        if cmd in ("buy", "sell"):
+            return self._cmd_order(cmd, arg)
+        if cmd == "close":
+            a = arg.split()
+            if not a:
+                return "usage: close <sym> [pct]"
+            pct = float(a[1].rstrip("%")) if len(a) > 1 else 100.0
+            return fmt_desk(await asyncio.to_thread(self.desk.close, a[0], pct, "operator close", "operator"))
+        if cmd == "release":
+            return json.dumps(self.desk.release(arg.strip()), indent=2) if arg.strip() else "usage: release <sym>"
+        if cmd == "mode":
+            return json.dumps(self.desk.set_mode(arg.strip() or "?"), indent=2)
+        if cmd == "journal":
+            n = int(arg) if arg.isdigit() else 15
+            rows = [f"#{j['id']} {time.strftime('%m-%d %H:%M', time.localtime(j['ts']))} {j['author'][:14]:14} "
+                    f"{j['side'].upper():4} {j['qty']} {j['symbol']} @ {j['price']}  pnl {j['realized_pnl']:+.2f}  {j['reason'][:60]}"
+                    for j in self.desk.journal[-n:]]
+            return "\n".join(rows) or "no desk orders yet"
+        if cmd == "overview":
+            ov = await asyncio.to_thread(self.market_overview)
+            rows = [f"{'SYM':7}{'LAST':>11}{'DAY':>8}{'TREND':>16}{'RSI':>6}{'POS%':>7}{'SIG%':>7}  BY"]
+            for r in ov["symbols"]:
+                rows.append(f"{r['symbol']:7}{r['last']:>11.2f}{(r['day_change'] or 0):>+8.2%}{r['trend']:>16}"
+                            f"{(r['rsi_14'] or 0):>6.0f}{r['position_weight']:>+7.1%}{r['strategy_target_weight']:>+7.1%}  {r['managed_by']}")
+            return "\n".join(rows)
+        if cmd == "analyze":
+            a = arg.split()
+            if not a:
+                return "usage: analyze <sym> [timeframe]"
+            return json.dumps(await asyncio.to_thread(self.analyze, a[0], a[1] if len(a) > 1 else "5Min"), indent=2)
         if cmd == "flatten":
-            self.paused = True
+            self.paused, self.paused_by = True, "operator"
             for f in await asyncio.to_thread(self.broker.close_all):
                 self._log_fill(f)
             self.bus.emit("warn", "operator flattened all positions; trading paused")

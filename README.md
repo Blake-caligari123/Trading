@@ -6,7 +6,8 @@ rewrite only when it beats the current version out of sample. You monitor and co
 
 It connects to AI in both directions over **MCP**:
 - **Any AI tool → bot.** The bot *is* an MCP server (`/mcp`). Claude, ChatGPT, Cursor, Grok, Gemini CLI
-  or any other MCP client can watch it, pause it, backtest ideas and submit new strategies.
+  or any other MCP client can research the market, trade directly (buy/sell with stops, inside hard risk limits), pause it,
+  backtest ideas and submit new strategies.
 - **Bot → any AI.** The built-in brain works with any OpenAI-compatible API (Grok by default; also
   OpenAI, OpenRouter, Ollama…) and can use the tools of any MCP server you point it at.
 
@@ -68,14 +69,27 @@ The bot serves MCP over Streamable HTTP at **`<bot-url>/mcp`**. Set `DASHBOARD_T
 | Claude.ai, ChatGPT and other remote-connector UIs | add a custom connector with URL `https://<bot>/mcp?token=<token>` |
 | stdio-only clients (older Claude Desktop, etc.) | command `npx -y mcp-remote https://<bot>/mcp --header "Authorization: Bearer <token>"` |
 
-Tools: `get_status`, `get_positions`, `get_trades`, `get_log`, `get_market_bars`, `get_strategy`,
-`get_versions`, `get_risk_limits`, `backtest_strategy`, `submit_strategy`, `run_evolution`,
-`rollback_strategy`, `pause_trading`, `resume_trading`, `flatten_positions`.
+**Tools the AI gets** (each one documents itself to the AI, plus an overall trading playbook):
 
-On purpose, there is **no** tool to place an arbitrary order or change risk limits. A strategy submitted by
-an outside AI goes through the same sandbox and out-of-sample gate as the bot's own, and is logged in the
-journal as `mcp:<author>`. Try asking your AI: *"Look at the trading bot's versions and current strategy,
-backtest an improvement, and submit it if it's better."*
+| | |
+|---|---|
+| Account | `get_account` (equity, cash, positions with weights/P&L/stops, exposure, limits, buying headroom), `get_status`, `get_trades`, `get_trade_journal`, `get_log`, `get_risk_limits` |
+| Research | `get_market_overview` (every symbol: price, trend, RSI, position, strategy signal), `get_quote`, `get_bars` (5Min…1Day), `analyze_symbol` (SMA/EMA, RSI, MACD, Bollinger, ATR, support/resistance, volume, suggested stops), `get_news`, `get_market_clock`, `get_strategy_signals` |
+| Trading | `buy`, `sell` (size by qty, notional or % of equity, optional stop-loss/take-profit, required `reason`, `dry_run` preview), `close_position`, `set_exits`, `release_symbol`, `set_trading_mode`, `pause_trading`, `resume_trading`, `flatten_positions` |
+| Strategy | `get_strategy`, `get_versions`, `backtest_strategy`, `submit_strategy`, `run_evolution`, `rollback_strategy` |
+
+**How direct trading works alongside the automatic strategy**
+- A symbol the AI (or you) trades is taken over by the **desk**: the strategy leaves it alone until `release_symbol`.
+  `set_trading_mode("manual")` makes the desk the only trader, and `auto` brings the strategy back.
+- Every desk order goes through the hard risk limits. A rejected order says why and gives the largest size that
+  *would* pass. Orders that reduce risk (closing, trimming) are **always** allowed, even when paused or halted.
+- Stops and targets are checked every bar and filled at market. Every order is logged in the journal with its
+  reason and realized P&L.
+- There is a cap on desk orders per hour (`MAX_MANUAL_ORDERS_PER_HOUR`). **The AI cannot change risk limits or undo
+  your pause**: if you `pause` from the terminal, only you can `resume`.
+
+You can trade from the terminal too: `buy SPY $3000 sl=170 tp=190`, `sell QQQ 5`, `close SPY`, `overview`,
+`analyze SPY 1Hour`, `journal`, `mode manual`, `release SPY`.
 
 ## Use it on your phone
 

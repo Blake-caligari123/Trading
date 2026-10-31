@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from .analysis import TIMEFRAMES, resample
+
 Bar = dict
 
 
@@ -16,7 +18,7 @@ class SyntheticFeed:
     Lets the whole bot (trading, backtests, evolution) run with zero API keys.
     """
 
-    def __init__(self, symbols: list[str], seed: int = 7, warmup: int = 600):
+    def __init__(self, symbols: list[str], seed: int = 7, warmup: int = 4000):
         self.rng = random.Random(seed)
         self.symbols = symbols
         self.bars: dict[str, list[Bar]] = {s: [] for s in symbols}
@@ -49,7 +51,27 @@ class SyntheticFeed:
     def last_price(self, symbol: str) -> float:
         return self.bars[symbol][-1]["c"]
 
-    def snapshot(self, keep: int = 3000) -> dict:
+    def get_bars(self, symbol: str, timeframe: str = "5Min", n: int = 100) -> list[Bar]:
+        factor = TIMEFRAMES.get(timeframe)
+        if factor is None:
+            raise ValueError(f"timeframe must be one of {list(TIMEFRAMES)}")
+        return resample(self.bars[symbol][-(n * factor + factor):], factor)[-n:]
+
+    def quote(self, symbol: str) -> dict:
+        last = self.last_price(symbol)
+        day = self.bars[symbol][-78:]
+        return {"symbol": symbol, "last": round(last, 4), "bid": round(last * 0.9999, 4), "ask": round(last * 1.0001, 4),
+                "day_open": round(day[0]["o"], 4), "day_high": round(max(b["h"] for b in day), 4),
+                "day_low": round(min(b["l"] for b in day), 4), "day_change": round(last / day[0]["o"] - 1, 5),
+                "source": "simulated market"}
+
+    def news(self, symbol: str, n: int = 10) -> list[dict]:
+        return [{"note": "simulated market: there is no news. Use your own web/X search for real-world context."}]
+
+    def clock(self) -> dict:
+        return {"is_open": True, "note": "simulated market trades 24/7; 78 bars = 1 trading day"}
+
+    def snapshot(self, keep: int = 5000) -> dict:
         v, internal, gauss = self.rng.getstate()
         return {"t": self._t, "state": self._state, "bars": {s: b[-keep:] for s, b in self.bars.items()},
                 "rng": [v, list(internal), gauss]}
@@ -117,3 +139,39 @@ class AlpacaFeed:
         if not bars:
             raise RuntimeError(f"No price for {symbol}")
         return bars[-1]["c"]
+
+    _DAYS_FOR = {"1Min": 3, "5Min": 10, "15Min": 20, "30Min": 30, "1Hour": 45, "4Hour": 120, "1Day": 400}
+
+    def get_bars(self, symbol: str, timeframe: str = "5Min", n: int = 100) -> list[Bar]:
+        if timeframe not in self._DAYS_FOR:
+            raise ValueError(f"timeframe must be one of {list(self._DAYS_FOR)}")
+        crypto = "/" in symbol
+        start = (datetime.now(timezone.utc) - timedelta(days=self._DAYS_FOR[timeframe])).isoformat()
+        params = {"symbols": symbol, "timeframe": timeframe, "start": start, "limit": 10000}
+        if not crypto:
+            params["feed"] = "iex"
+        r = self.client.get("/v1beta3/crypto/us/bars" if crypto else "/v2/stocks/bars", params=params)
+        r.raise_for_status()
+        bars = (r.json().get("bars") or {}).get(symbol, [])
+        return [{"t": b["t"], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]} for b in bars][-n:]
+
+    def quote(self, symbol: str) -> dict:
+        crypto = "/" in symbol
+        path = "/v1beta3/crypto/us/snapshots" if crypto else "/v2/stocks/snapshots"
+        params = {"symbols": symbol} | ({} if crypto else {"feed": "iex"})
+        r = self.client.get(path, params=params)
+        r.raise_for_status()
+        j = r.json()
+        snap = (j.get("snapshots") or j).get(symbol, {})
+        q, d, t = snap.get("latestQuote", {}), snap.get("dailyBar", {}), snap.get("latestTrade", {})
+        last = t.get("p") or d.get("c")
+        return {"symbol": symbol, "last": last, "bid": q.get("bp"), "ask": q.get("ap"),
+                "day_open": d.get("o"), "day_high": d.get("h"), "day_low": d.get("l"),
+                "day_change": round(last / d["o"] - 1, 5) if last and d.get("o") else None,
+                "prev_close": (snap.get("prevDailyBar") or {}).get("c"), "source": "alpaca iex"}
+
+    def news(self, symbol: str, n: int = 10) -> list[dict]:
+        r = self.client.get("/v1beta1/news", params={"symbols": symbol.replace("/", ""), "limit": max(1, min(n, 50))})
+        r.raise_for_status()
+        return [{"time": a.get("created_at"), "headline": a.get("headline"), "summary": (a.get("summary") or "")[:400],
+                 "source": a.get("source"), "url": a.get("url")} for a in r.json().get("news", [])]

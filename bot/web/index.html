@@ -94,6 +94,7 @@
   <span><span class="k">total</span> <span class="v" id="pnltot">—</span></span>
   <span><span class="k">strat</span> <span class="v" id="ver">—</span></span>
   <span><span class="k">pos</span> <span class="v" id="pos">—</span></span>
+  <span><span class="k">mode</span> <span class="v" id="mode">—</span></span>
   <span><span class="k">broker</span> <span class="v" id="broker">—</span></span>
   <span><span class="k">ai</span> <span class="v" id="ai">—</span></span>
   <span id="spark"></span>
@@ -101,9 +102,13 @@
 </div>
 <div id="log"></div>
 <div id="chips">
+  <button data-c="overview">overview</button>
   <button data-c="status">status</button>
   <button data-c="positions">positions</button>
   <button data-c="trades">trades</button>
+  <button data-c="journal">journal</button>
+  <button data-c="buy " data-fill>buy…</button>
+  <button data-c="sell " data-fill>sell…</button>
   <button data-c="versions">versions</button>
   <button data-c="evolve">evolve</button>
   <button data-c="ask " data-fill>ask…</button>
@@ -127,7 +132,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const log = $("log"), input = $("in");
-const CMDS = ["help","status","positions","trades","strategy","params","versions","evolve","rollback","ask","mcp","pause","resume","flatten","reset-halt","clear"];
+const CMDS = ["help","status","positions","trades","strategy","params","versions","evolve","rollback","ask","mcp","pause","resume","flatten","reset-halt","clear","overview","analyze","buy","sell","close","release","mode","journal"];
 const store = { get(k, d) { try { return localStorage.getItem(k) ?? d } catch { return d } },
                 set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v) } catch {} } };
 const hist = JSON.parse(store.get("hist", "[]"));
@@ -169,6 +174,7 @@ function status(s) {
   $("pnlday").textContent = sgn(s.pnl_today); color($("pnlday"), s.pnl_today);
   $("pnltot").textContent = sgn(s.pnl_total); color($("pnltot"), s.pnl_total);
   $("ver").textContent = "v" + s.version; $("pos").textContent = s.positions; $("ai").textContent = s.ai;
+  $("mode").textContent = (s.mode || "auto") + (s.desk && s.desk.length ? " · desk:" + s.desk.join(",") : "");
   const sp = s.spark || [];
   if (sp.length > 1) {
     const lo = Math.min(...sp), hi = Math.max(...sp), bl = "▁▂▃▄▅▆▇█";

@@ -71,8 +71,35 @@ def test_mcp_tools_end_to_end(server):
         hc, client = await _session(url)
         async with hc, client as c:
             names = {t.name for t in (await c.list_tools()).tools}
-            assert {"get_status", "submit_strategy", "backtest_strategy", "pause_trading", "get_risk_limits"} <= names
-            assert not any("order" in n or "risk" in n and "get" not in n for n in names)  # no order/limit-changing tools
+            assert {"get_account", "get_market_overview", "get_quote", "get_bars", "analyze_symbol", "get_news",
+                    "get_market_clock", "get_strategy_signals", "get_trade_journal", "buy", "sell", "close_position",
+                    "set_exits", "release_symbol", "set_trading_mode", "submit_strategy", "pause_trading"} <= names
+            assert not any(n.startswith(("set_risk", "set_limit", "update_risk")) for n in names)  # limits stay fixed
+
+            async def call(name, **args):
+                res = await c.call_tool(name, args)
+                return res.content[0].text
+
+            ov = json.loads(await call("get_market_overview"))
+            sym = ov["symbols"][0]["symbol"]
+            ind = json.loads(await call("analyze_symbol", symbol=sym, timeframe="1Hour"))
+            assert ind["timeframe"] == "1Hour" and ind["suggested_stop_long_2atr"]
+            await call("set_trading_mode", mode="manual")
+            await asyncio.to_thread(engine.broker.close_all)
+            prev = json.loads(await call("buy", symbol=sym, notional=1000, reason="test", dry_run=True))
+            assert prev["status"] == "preview"
+            fill = json.loads(await call("buy", symbol=sym, notional=1000, stop_loss=ind["suggested_stop_long_2atr"],
+                                         reason="uptrend on 1h, RSI neutral"))
+            assert fill["status"] == "filled", fill
+            acct = json.loads(await call("get_account"))
+            row = next(p for p in acct["positions"] if p["symbol"] == sym)
+            assert row["managed_by"] == "desk" and row["stop_loss"] == ind["suggested_stop_long_2atr"]
+            journal = json.loads(await call("get_trade_journal"))
+            assert journal[-1]["reason"] == "uptrend on 1h, RSI neutral" and journal[-1]["author"] == "mcp-ai"
+            assert json.loads(await call("close_position", symbol=sym, reason="done"))["status"] == "filled"
+            await engine.command("pause")                      # operator pause …
+            assert (await call("resume_trading")).startswith("refused")   # … can't be undone by the AI
+            await engine.command("resume")
 
             status = json.loads((await c.call_tool("get_status", {})).content[0].text)
             assert status["type"] == "status"

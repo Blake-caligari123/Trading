@@ -43,6 +43,7 @@ class RiskLimits:
     max_order_notional: float = 5000.0
     max_daily_loss_pct: float = 0.03
     allow_short: bool = False
+    max_manual_orders_per_hour: int = 30
 
 
 @dataclass
@@ -102,6 +103,7 @@ class Config:
                 max_order_notional=_f("MAX_ORDER_NOTIONAL", 5000.0),
                 max_daily_loss_pct=_f("MAX_DAILY_LOSS_PCT", 0.03),
                 allow_short=_b("ALLOW_SHORT", False),
+                max_manual_orders_per_hour=_i("MAX_MANUAL_ORDERS_PER_HOUR", 30),
             ),
             host=os.getenv("HOST", "127.0.0.1"),
             port=_i("PORT", 8000),

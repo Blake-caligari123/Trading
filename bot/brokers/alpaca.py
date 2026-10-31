@@ -54,6 +54,9 @@ class AlpacaBroker(Broker):
         r.raise_for_status()
         return r.json() if r.content else []
 
+    def clock(self) -> dict:
+        return self._get("/v2/clock")
+
     def market_open(self) -> bool:
         try:
             return bool(self._get("/v2/clock")["is_open"])

@@ -50,6 +50,12 @@ class PaperBroker(Broker):
         self.fills.append(rec)
         return rec
 
+    def snapshot(self) -> dict:
+        return {"cash": self._cash, "pos": self._pos, "fills": self.fills[-500:]}
+
+    def restore(self, snap: dict) -> None:
+        self._cash, self._pos, self.fills = snap["cash"], snap["pos"], snap.get("fills", [])
+
     def close_all(self) -> list[dict]:
         out = []
         for s, p in list(self.positions().items()):

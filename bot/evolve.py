@@ -105,6 +105,10 @@ class Evolver:
                                cwd=ROOT, capture_output=True, text=True, timeout=30)
             if r.returncode == 0:
                 self.bus.emit("evolve", f"git: committed '{message.splitlines()[0]}'")
+                if self.cfg.auto_git_push:
+                    p = subprocess.run(["git", "push", "origin", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+                    self.bus.emit("evolve" if p.returncode == 0 else "warn",
+                                  "git: pushed to GitHub" if p.returncode == 0 else f"git push failed: {p.stderr.strip()[:200]}")
         except Exception as e:
             self.bus.emit("warn", f"git commit skipped: {e}")
 

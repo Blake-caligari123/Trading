@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -63,6 +64,52 @@ class Engine:
         self._last_risk_notes: list[str] = []
         self._tasks: set[asyncio.Task] = set()
         self._register_brain_tools()
+        self.state_path = DATA_DIR / "state.json"
+        self._save_every = max(1, int(30 / max(cfg.tick_seconds, 0.01)))  # ~every 30 s
+        if cfg.persist_state:
+            self.load_state()
+
+    # ---------- persistence (survives Codespace / container restarts) ----------
+    def save_state(self) -> None:
+        snap = {"saved": time.time(), "broker": self.cfg.broker, "symbols": self.cfg.symbols,
+                "ticks": self.ticks, "paused": self.paused, "day": self._day,
+                "day_start_equity": self.risk.state.day_start_equity if self.risk.state else None,
+                "halted": bool(self.risk.state and self.risk.state.halted),
+                "halt_reason": self.risk.state.halt_reason if self.risk.state else "",
+                "equity_curve": self.equity_curve[-2000:], "trades": self.trades[-500:]}
+        if isinstance(self.broker, PaperBroker):
+            snap["paper"] = self.broker.snapshot()
+        if isinstance(self.feed, SyntheticFeed):
+            snap["feed"] = self.feed.snapshot()
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(snap, default=str))
+        os.replace(tmp, self.state_path)
+
+    def load_state(self) -> None:
+        if not self.state_path.exists():
+            return
+        try:
+            snap = json.loads(self.state_path.read_text())
+        except (OSError, ValueError) as e:
+            self.bus.emit("warn", f"could not read saved state ({e}); starting fresh")
+            return
+        if snap.get("broker") != self.cfg.broker or snap.get("symbols") != self.cfg.symbols:
+            self.bus.emit("warn", "saved state is for a different broker/symbol list; starting fresh")
+            return
+        if "feed" in snap and isinstance(self.feed, SyntheticFeed) and not self.feed.restore(snap["feed"]):
+            return
+        if "paper" in snap and isinstance(self.broker, PaperBroker):
+            self.broker.restore(snap["paper"])
+        self.ticks, self.paused, self._day = snap["ticks"], snap["paused"], snap["day"]
+        self.equity_curve = [tuple(x) for x in snap["equity_curve"]]
+        self.trades = snap["trades"]
+        if snap.get("day_start_equity"):
+            self.risk.start_day(snap["day_start_equity"])
+            self.risk.state.halted, self.risk.state.halt_reason = snap["halted"], snap["halt_reason"]
+        age = (time.time() - snap["saved"]) / 60
+        self.bus.emit("info", f"resumed saved state from {age:.0f} min ago (tick {self.ticks}"
+                              + (", PAUSED" if self.paused else "") + (", HALTED" if snap["halted"] else "") + ")")
 
     # ---------- lifecycle ----------
     def load_active_strategy(self) -> None:
@@ -88,6 +135,11 @@ class Engine:
                 self.bus.emit("error", f"tick failed: {type(e).__name__}: {e}")
             if self.cfg.evolve_every_ticks and self.ticks and self.ticks % self.cfg.evolve_every_ticks == 0:
                 self.spawn(self.run_evolution())
+            if self.cfg.persist_state and self.ticks % self._save_every == 0:
+                try:
+                    await asyncio.to_thread(self.save_state)
+                except Exception as e:
+                    self.bus.emit("warn", f"state save failed: {e}")
             await asyncio.sleep(max(0.1, self.cfg.tick_seconds - (time.monotonic() - t0)))
 
     def spawn(self, coro) -> None:
@@ -268,6 +320,12 @@ class Engine:
                 "spark": [round(e, 2) for _, e in self.equity_curve[-120:]]}
 
     async def command(self, line: str) -> str:
+        out = await self._command(line)
+        if self.cfg.persist_state and line.strip().split(" ")[0].lower() in {"pause", "resume", "flatten", "reset-halt", "rollback"}:
+            await asyncio.to_thread(self.save_state)  # operator decisions must survive a restart
+        return out
+
+    async def _command(self, line: str) -> str:
         parts = line.strip().split(maxsplit=1)
         if not parts:
             return ""

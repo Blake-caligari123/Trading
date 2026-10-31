@@ -98,9 +98,7 @@ The app reconnects by itself when you come back to it.
   your bot's https URL and token (saved only on that device). You can also open it pre-filled:
   `…/Trading/?server=https://<bot>&token=<token>`. The address is stripped from the bar after loading.
   Pages is https, so the bot URL must be https too (a tunnel or hosted deploy, not plain `http://`).
-- **Codespaces:** *Code → Codespaces → Create* runs the bot in the cloud with everything installed. Add
-  `DASHBOARD_TOKEN` (and optionally `LLM_API_KEY` and the Alpaca keys) as Codespaces secrets, then
-  `python -m bot`. Good for trying it out. Codespaces stop when idle, so use Docker hosting for 24/7 trading.
+- **Codespaces (the bot runs on GitHub):** see the next section.
 - **CI:** `.github/workflows/tests.yml` runs the test suite on every push.
 
 ## Terminal commands
@@ -109,6 +107,34 @@ The app reconnects by itself when you come back to it.
 `rollback <v>` · `ask <question>` · `mcp` · `pause` · `resume` · `flatten` · `reset-halt` · `clear`
 
 Use ↑/↓ for history and Tab to complete. On a phone, tap the chips.
+
+## Run it on GitHub Codespaces (no computer needed)
+
+**First time (about 2 minutes):**
+1. Optional: in GitHub **Settings → Codespaces → Secrets**, add `LLM_API_KEY` (and `LLM_BASE_URL`,
+   `LLM_MODEL`, or the Alpaca keys) for this repo. Skip it to run offline.
+2. Optional: in **Settings → Codespaces → Default idle timeout**, pick **240 minutes** (the maximum).
+3. On the repo page: **Code → Codespaces → Create codespace on the default branch**.
+
+When it finishes loading, the bot **starts by itself**, port 8000 is made **public**, and a terminal shows a
+box with everything you need: the terminal link, the Pages link, and the URLs and keys for Claude and Grok.
+Reprint it at any time with `bash scripts/codespace.sh connect`.
+
+**After it stops** (idle timeout, or GitHub's 12-hour maximum): go to **github.com/codespaces** (works from
+your phone's browser) and open the same Codespace again. The bot restarts by itself and **continues where it
+left off**: same simulated account, positions, P&L history and strategy versions. The **address and key stay
+the same**, so the Claude and Grok connectors keep working without changes.
+
+Good to know:
+- While the Codespace is stopped, the bot isn't trading. Positions held at a real broker (Alpaca, MetaTrader)
+  stay open with no one managing them. Run `flatten` first if you don't want that.
+- Free GitHub accounts include about 60 hours a month on a 2-core Codespace. After that it's about $0.18/hour,
+  and GitHub asks before charging if you've set a spending limit.
+- Evolved strategies are committed **and pushed** to GitHub automatically (`AUTO_GIT_PUSH=true` in the
+  Codespace), so they survive even if the Codespace is deleted.
+- Use one Codespace and keep reopening it. A *new* Codespace gets a new address (and new key, unless you set the
+  `DASHBOARD_TOKEN` secret), so the connectors would need updating.
+- Commands: `bash scripts/codespace.sh [start|stop|connect|log]`.
 
 ## How self-improvement stays safe
 

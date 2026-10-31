@@ -68,6 +68,8 @@ class Config:
     port: int = 8000
     dashboard_token: str = ""
     mcp_server_enabled: bool = True
+    persist_state: bool = False      # from_env() turns this on; off for tests / embedded use
+    auto_git_push: bool = False
 
     @property
     def is_live_money(self) -> bool:
@@ -105,6 +107,8 @@ class Config:
             port=_i("PORT", 8000),
             dashboard_token=os.getenv("DASHBOARD_TOKEN", ""),
             mcp_server_enabled=_b("MCP_SERVER_ENABLED", True),
+            persist_state=_b("PERSIST_STATE", True),
+            auto_git_push=_b("AUTO_GIT_PUSH", False),
         )
         cfg.validate()
         return cfg

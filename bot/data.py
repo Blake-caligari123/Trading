@@ -49,6 +49,20 @@ class SyntheticFeed:
     def last_price(self, symbol: str) -> float:
         return self.bars[symbol][-1]["c"]
 
+    def snapshot(self, keep: int = 3000) -> dict:
+        v, internal, gauss = self.rng.getstate()
+        return {"t": self._t, "state": self._state, "bars": {s: b[-keep:] for s, b in self.bars.items()},
+                "rng": [v, list(internal), gauss]}
+
+    def restore(self, snap: dict) -> bool:
+        """Continue the same simulated market after a restart. Ignored if the symbol list changed."""
+        if set(snap.get("bars", {})) != set(self.symbols):
+            return False
+        self._t, self._state, self.bars = snap["t"], snap["state"], snap["bars"]
+        v, internal, gauss = snap["rng"]
+        self.rng.setstate((v, tuple(internal), gauss))
+        return True
+
 
 class AlpacaFeed:
     """Historical/latest bars from Alpaca's market data API (stocks; crypto if symbol contains '/')."""

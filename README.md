@@ -110,6 +110,9 @@ Use ↑/↓ for history and Tab to complete. On a phone, tap the chips.
 
 ## Run it on GitHub Codespaces (no computer needed)
 
+**One-tap start / resume:** **https://codespaces.new/Blake-caligari123/Trading?quickstart=1**
+(creates the Codespace the first time; afterwards it offers to reopen the existing one, so bookmark it)
+
 **First time (about 2 minutes):**
 1. Optional: in GitHub **Settings → Codespaces → Secrets**, add `LLM_API_KEY` (and `LLM_BASE_URL`,
    `LLM_MODEL`, or the Alpaca keys) for this repo. Skip it to run offline.

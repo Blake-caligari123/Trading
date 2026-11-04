@@ -38,3 +38,22 @@ Nine scenes: a sparring match at Ashford Estate, Aldric's farewell, the break-in
 ## Tech
 
 A single self-contained HTML file. Three.js r128 (from the cdnjs CDN) renders the 3D world. All pixel art is generated procedurally in code at load time.
+
+## Graphics pass
+
+The Blender scenery pack adds a tiled, timber-framed manor, barrel, chest,
+bench and altar. Ground details are baked at 32 pixels per tile, night lighting
+is more readable, and cached display poses provide subtle strike/guard motion.
+Story, collision maps, combat rules and save keys are unchanged.
+
+- Rebuild models and the asset preview: `blender -b --python tools/build_assets.py`
+- Validate: `node tests/graphics.cjs`
+- Serve this directory with any static HTTP server and open `index.html`.
+- Keep `assets/environment.js` alongside the HTML. If absent, the original
+  primitive scenery is used. Mesh buffers are shared across map loads.
+- `art/environment.blend` is editable source; `art/manor-preview.png` is a Blender
+  asset render, not a gameplay screenshot.
+
+Validation limitation: the review browser cannot create WebGL contexts. Title
+loading, JS syntax, mesh data and preservation of the runtime/story were checked;
+full gameplay and phone frame rate still need verification on a WebGL device.

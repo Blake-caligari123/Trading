@@ -12,5 +12,5 @@ const original=cp.execFileSync('git',['show','c2c02c679e8772c0a5d73c1e62c26eec98
 const range=(s,a,b)=>{assert(s.includes(a)&&s.includes(b));return s.slice(s.indexOf(a),s.indexOf(b))};
 // Runtime deliberately changed by the health pass; behaviour is covered by health.cjs.
 assert(html.includes('function runScene(id)'));
-assert.equal(range(html,'function runScene(id)','/* ============ loop'),range(original,'function runScene(id)','/* ============ loop'));
+assert.equal(range(html,'async function scYard()','/* ============ loop'),range(original,'async function scYard()','/* ============ loop'));
 console.log('PASS: syntax, geometry, unchanged story tail');

@@ -17,6 +17,22 @@
 - Both start and continue are blocked when graphics cannot initialise, with a
   visible explanation rather than a nonfunctional continue button.
 
+## Gameplay pass
+
+- Wall-aware targeting, melee, skills, enemy strikes and ally attacks; arrows
+  check their travelled segment, and enemy detection respects walls.
+- Melee collision uses the post-lunge position. Last-frame parries preserve
+  enemy/boss stun instead of immediately overwriting it with recovery.
+- Skills cannot fire during stun/dash; dashing cancels charge. Pause clears the
+  buffered attack, and scene restarts clear paths, flags and slowdown effects.
+- Heavy attack button indicates charge/release; dash meter uses its real cooldown.
+- Pickups avoid zero-distance division and wall drift, remain at full health,
+  show actual healing, and cannot revive a player after a lethal hit that frame.
+- Passive regeneration waits until nearby visible combat has ended.
+- Retry and Continue restore chapter-entry corruption and choices using a
+  validated checkpoint. Fresh games reset the tutorial hints too.
+- Audio context resumes after a suspended start when an action initialises audio.
+
 ## Validation
 
 Run `node tests/graphics.cjs` and `node tests/health.cjs` from the repository root.
@@ -29,8 +45,14 @@ reach the ending and persist the expected choices in scripted progression.
 Progression tests simulate combat outcomes and move the player to story triggers;
 they do not establish that encounters are balanced or paths are easy to navigate.
 
-Story text, scene sequence, combat damage values, map layouts, and save keys
-are unchanged. The title and failure explanation can be inspected in-browser.
+Added regression checks cover wall-blocked attacks, skill stun restrictions,
+last-frame melee/boss parries, exact-position/full-health pickups, death ordering,
+regeneration, charge/cooldown feedback, dash/pause cancellation, transient state
+reset, checkpoint retries, fresh-script Continue and malformed checkpoint recovery.
+Run `TEST_NO_WEBGL=1 node tests/health.cjs` for the unavailable-GPU startup case.
+
+Story text, scene sequence, combat damage values and map layouts are unchanged.
+Existing save keys are retained, with a new `gatebreak.checkpoint.v1` snapshot. The title and failure explanation can be inspected in-browser.
 
 ## Still needs hands-on verification
 

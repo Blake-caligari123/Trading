@@ -6,13 +6,13 @@ Twin brothers. A little sister. A sword that was chained beneath the house for a
 
 ## Play
 
-Open `index.html` in a modern browser. It needs WebGL and an internet connection the first time, to load Three.js and the fonts from a CDN.
+Play at https://blake-caligari123.github.io/Trading/ in a modern browser with WebGL. The game engine and scenery are included locally; optional web fonts fall back to monospace.
 
 To host it, enable **GitHub Pages** for this repository (Settings → Pages → deploy from branch, root folder) and open the URL it gives you.
 
 ## The prologue
 
-Nine scenes: a sparring match at Ashford Estate, Aldric's farewell, the break-in, the whisper behind the bookcase, the sword Morrow, the Old Wood and the Sunken Temple, the ruins in the rain, and the battlefield years later. You play both twins: Kael in the yard and during the break-in, Riven from the whisper onward. Two choices in the temple carry forward into later dialogue and the end card. Progress saves at the start of each scene.
+Nine scenes: a sparring match at Ashford Estate, Aldric's farewell, the break-in, the whisper behind the bookcase, the sword Morrow, the Old Wood and the Sunken Temple, the ruins in the rain, and the battlefield years later. You play both twins: Kael in the yard and during the break-in, Riven from the whisper onward. Two choices in the temple carry forward into later dialogue and the end card. Progress saves at the start of each scene. Retrying or continuing restores that scene’s starting corruption and story choices.
 
 ## Controls
 
@@ -37,7 +37,7 @@ Nine scenes: a sparring match at Ashford Estate, Aldric's farewell, the break-in
 
 ## Tech
 
-A single self-contained HTML file. Three.js r128 (from the cdnjs CDN) renders the 3D world. All pixel art is generated procedurally in code at load time.
+The game lives in `index.html`, with local engine and scenery assets. Three.js r128 renders the 3D world. All pixel art is generated procedurally in code at load time.
 
 ## Graphics pass
 
@@ -63,3 +63,14 @@ full gameplay and phone frame rate still need verification on a WebGL device.
 See [HEALTH-CHECK.md](HEALTH-CHECK.md) for fixes, tested behaviour and remaining
 hands-on checks. Run `node tests/graphics.cjs` and `node tests/health.cjs`.
 The engine is now included at `assets/vendor/three-r128.min.js`.
+
+## Gameplay polish
+
+Attacks and targeting respect walls. Successful parries retain their full punish
+window, including against Hesk. Dash cancels attack charge, stunned characters
+cannot cast skills, and the shorter input buffer reduces delayed swings.
+
+The attack button shows CHARGE / RELEASE, and the dash meter reflects its actual
+cooldown. Healing drops remain available at full health and report the amount
+healed. Passive healing starts after disengaging from nearby enemies. Retry and
+Continue restore the chapter-entry snapshot, including corruption and choices.

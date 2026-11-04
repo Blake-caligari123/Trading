@@ -57,3 +57,9 @@ Story, collision maps, combat rules and save keys are unchanged.
 Validation limitation: the review browser cannot create WebGL contexts. Title
 loading, JS syntax, mesh data and preservation of the runtime/story were checked;
 full gameplay and phone frame rate still need verification on a WebGL device.
+
+## Health and polish
+
+See [HEALTH-CHECK.md](HEALTH-CHECK.md) for fixes, tested behaviour and remaining
+hands-on checks. Run `node tests/graphics.cjs` and `node tests/health.cjs`.
+The engine is now included at `assets/vendor/three-r128.min.js`.
